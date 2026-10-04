@@ -89,11 +89,72 @@ function chainGaps(data, batchId) {
 
 // MKT：平均动力学温度
 function mktCelsius(data, batchId) {
-  const settings = data.settings;
   const rows = effectiveRecords(data, batchId);
-  if (!rows.length) return 0;
+  if (!rows.length) return null;
   const sum = rows.reduce((acc, row) => acc + Number(row.temperatureC), 0);
   return store.round(sum / rows.length, 2);
+}
+
+// 数据充分性：一条有效记录都没有、或者记录覆盖不住在库时段
+//（入库→首条记录、末条记录→判定参考时刻之间存在超过断链门槛的空档），都算数据不足
+function coverageStats(data, batch, referenceAt) {
+  const settings = data.settings;
+  const gapLimit = Number(settings.chainGapMinutes);
+  const rows = effectiveRecords(data, batch.id);
+  const refAt = referenceAt || store.nowText();
+  const isNow = !referenceAt;
+  const issues = [];
+  const spanMinutes = (a, b) => Math.max(0, store.minutesBetween(a, b));
+
+  if (!rows.length) {
+    const minutes = spanMinutes(batch.loadedAt, refAt);
+    issues.push({
+      key: 'noRecord',
+      text: '没有任何有效温度记录',
+      detail: '批次自 ' + batch.loadedAt + ' 入库以来一条有效温度记录都没有，无法判定全程温度是否合格',
+      from: batch.loadedAt,
+      to: refAt,
+      minutes,
+    });
+    return {
+      adequate: false, referenceAt: refAt, recordCount: 0,
+      requiredFrom: batch.loadedAt, requiredTo: refAt,
+      firstAt: '', lastAt: '', issues, uncoveredMinutes: minutes,
+    };
+  }
+
+  const firstAt = rows[0].at;
+  const lastAt = rows[rows.length - 1].at;
+  const headMinutes = spanMinutes(batch.loadedAt, firstAt);
+  if (headMinutes > gapLimit) {
+    issues.push({
+      key: 'headGap',
+      text: '入库后到首条记录之间没有温度覆盖',
+      detail: '入库时刻 ' + batch.loadedAt + ' 到首条记录 ' + firstAt + ' 之间有 ' + headMinutes + ' 分钟没有任何温度记录（门槛 ' + gapLimit + ' 分钟），缺少这段时间的温度覆盖',
+      from: batch.loadedAt,
+      to: firstAt,
+      minutes: headMinutes,
+    });
+  }
+  const tailMinutes = spanMinutes(lastAt, refAt);
+  if (tailMinutes > gapLimit) {
+    const endDesc = isNow ? '当前' : '判定时刻 ' + refAt;
+    issues.push({
+      key: 'tailGap',
+      text: '末条记录之后到' + (isNow ? '当前' : '判定时刻') + '没有温度覆盖',
+      detail: '末条记录 ' + lastAt + ' 之后到' + endDesc + ' 有 ' + tailMinutes + ' 分钟没有任何温度记录（门槛 ' + gapLimit + ' 分钟），缺少这段时间的温度覆盖',
+      from: lastAt,
+      to: refAt,
+      minutes: tailMinutes,
+    });
+  }
+
+  return {
+    adequate: issues.length === 0, referenceAt: refAt, recordCount: rows.length,
+    requiredFrom: batch.loadedAt, requiredTo: refAt,
+    firstAt, lastAt, issues,
+    uncoveredMinutes: issues.reduce((acc, i) => acc + i.minutes, 0),
+  };
 }
 
 // 探头校准有效期
@@ -130,9 +191,19 @@ function monthlyExcursionMinutes(data, batchId) {
   return segmentStats(scoped, data.settings).totalMinutes;
 }
 
-// 放行判定：最长超限、累计超限、断链、探头校准四条
+// 判定参考时刻：在办批次看当前（返回 null 表示用当前时刻）；已经有放行/拒收结论的批次回看当时决定时刻
+function referenceAtFor(data, batch) {
+  if (batch.status === '在库' || batch.status === '待放行' || !batch.status) return null;
+  if (batch.decidedAt) return batch.decidedAt;
+  const releases = data.releases.filter((r) => r.batchId === batch.id).sort((a, b) => (a.decidedAt < b.decidedAt ? 1 : -1));
+  return releases.length ? releases[0].decidedAt : null;
+}
+
+// 放行判定：数据充分性是前置闸门；之后再看最长超限、累计超限、断链、探头校准四条
 function releaseCheck(data, batch) {
   const settings = data.settings;
+  const referenceAt = referenceAtFor(data, batch);
+  const coverage = coverageStats(data, batch, referenceAt);
   const stats = excursionStats(data, batch.id);
   const chain = chainGaps(data, batch.id);
   const accumulated = monthlyExcursionMinutes(data, batch.id);
@@ -141,8 +212,28 @@ function releaseCheck(data, batch) {
     { key: 'longest', ok: stats.longestMinutes <= Number(settings.allowExcursionMinutes), value: stats.longestMinutes, limit: Number(settings.allowExcursionMinutes), text: '单次连续超限不超过 ' + settings.allowExcursionMinutes + ' 分钟' },
     { key: 'total', ok: accumulated <= Number(settings.allowTotalExcursionMinutes), value: accumulated, limit: Number(settings.allowTotalExcursionMinutes), text: '累计超限不超过 ' + settings.allowTotalExcursionMinutes + ' 分钟' },
     { key: 'chain', ok: chain.gapCount === 0, value: chain.gapCount, limit: 0, text: '全程没有断链' },
+    { key: 'calibration', ok: expired.length === 0, value: expired.length, limit: 0, text: '参与判定的探头都在校准有效期内' },
   ];
+  const criteriaPass = conditions.every((c) => c.ok);
+  const failed = conditions.filter((c) => !c.ok).map((c) => c.key);
+  let verdict;
+  let conclusion;
+  if (!coverage.adequate) {
+    verdict = 'insufficientData';
+    conclusion = '数据不足，不能放行';
+    failed.push('data');
+  } else if (criteriaPass) {
+    verdict = 'pass';
+    conclusion = '满足放行条件';
+  } else {
+    verdict = 'fail';
+    conclusion = '未满足放行条件';
+  }
   return {
+    verdict,
+    conclusion,
+    dataAdequate: coverage.adequate,
+    coverage,
     mkt: mktCelsius(data, batch.id),
     longestMinutes: stats.longestMinutes,
     totalMinutes: stats.totalMinutes,
@@ -152,8 +243,8 @@ function releaseCheck(data, batch) {
     chain,
     expiredProbes: expired,
     conditions,
-    pass: conditions.every((c) => c.ok),
-    failed: conditions.filter((c) => !c.ok).map((c) => c.key),
+    pass: coverage.adequate && criteriaPass,
+    failed,
   };
 }
 
@@ -169,5 +260,7 @@ module.exports = {
   expiredProbes,
   accumulatedExcursionMinutes,
   monthlyExcursionMinutes,
+  coverageStats,
+  referenceAtFor,
   releaseCheck,
 };

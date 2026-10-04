@@ -349,6 +349,17 @@ function decide(data, batchId, payload) {
     throw new AppError(400, 'VALIDATION_FAILED', '经办人要填', { decider: '经办人不能为空' });
   }
   const check = coldlib.releaseCheck(data, batch);
+  if (payload.decision === '放行' && !check.pass) {
+    // 口径：数据不足（没有有效记录或记录覆盖不住在库时段）直接挡下；判据没过同样不能放行
+    if (!check.dataAdequate) {
+      const detailText = check.coverage.issues.map((i) => i.detail).join('；');
+      throw new AppError(409, 'RELEASE_DATA_INSUFFICIENT',
+        '数据不足，不能放行：' + check.coverage.issues.map((i) => i.text).join('；'),
+        { 数据覆盖: detailText });
+    }
+    const failedText = check.conditions.filter((c) => !c.ok).map((c) => c.text + '（实际 ' + c.value + '，阈值 ' + c.limit + '）').join('；');
+    throw new AppError(409, 'RELEASE_CHECK_FAILED', '放行判据没有全部满足，不能放行', { 未满足项: failedText });
+  }
   const release = {
     id: store.nextId('rl', data.releases),
     batchId: batch.id,

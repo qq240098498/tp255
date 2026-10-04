@@ -87,6 +87,11 @@ button { font-family: inherit; font-size: 13px; }
 .btn-danger { border-color: var(--accent); color: var(--accent); }
 .btn-danger:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .btn-danger.armed { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn:disabled, .btn[disabled] {
+  opacity: .45; cursor: not-allowed;
+  background: #f2f5f7; border-color: var(--line); color: var(--ink-soft);
+}
+.btn:disabled:hover, .btn[disabled]:hover { background: #f2f5f7; border-color: var(--line); color: var(--ink-soft); }
 
 .icon-btn {
   border: none; background: transparent; color: var(--ink-soft);
@@ -228,6 +233,19 @@ tr.row-detail > td { background: #f7fbfc; border-bottom: 1px solid var(--line); 
 .pill-ok { color: var(--ok); border-color: #a9d8c4; background: var(--ok-soft); }
 .pill-bad { color: var(--accent); border-color: #f3b7b0; background: var(--accent-soft); }
 .pill-mute { color: var(--ink-soft); }
+.pill-warn { color: #a86b00; border-color: #ecd29a; background: #fdf5e3; }
+
+/* 数据不足告警框 */
+.data-warning {
+  margin: 2px 0 10px;
+  padding: 8px 10px;
+  border: 1px solid #ecd29a;
+  border-radius: 5px;
+  background: #fdf5e3;
+}
+.data-warning .data-warning-title { color: #a86b00; font-weight: bold; margin-bottom: 4px; }
+.data-warning ul { margin: 4px 0 0; padding-left: 18px; }
+.data-warning li { color: var(--ink); margin: 2px 0; }
 
 .cond-list { list-style: none; margin: 0; padding: 0; }
 .cond-list li { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; border-bottom: 1px dashed var(--line-soft); }
