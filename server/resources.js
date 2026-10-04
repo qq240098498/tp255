@@ -349,6 +349,28 @@ function decide(data, batchId, payload) {
     throw new AppError(400, 'VALIDATION_FAILED', '经办人要填', { decider: '经办人不能为空' });
   }
   const check = coldlib.releaseCheck(data, batch);
+  // 放行必须在服务端再拦一道：判定不满足（含数据不足）时不能登记放行，拒收不受此限
+  if (payload.decision === '放行' && !check.pass) {
+    const reasons = [];
+    if (check.verdict === 'insufficient') {
+      for (const g of (check.coverage && check.coverage.gaps) || []) reasons.push(g.text);
+      throw new AppError(
+        409,
+        'RELEASE_NOT_ALLOWED',
+        '数据不足，不能放行：' + (reasons.length ? reasons.join('；') : '没有足以覆盖在库时段的有效温度记录'),
+        { code: batch.code, verdict: check.verdict, reasons }
+      );
+    }
+    for (const c of check.conditions || []) {
+      if (!c.ok) reasons.push(c.text + '（实际 ' + c.value + '，阈值 ' + c.limit + '）');
+    }
+    throw new AppError(
+      409,
+      'RELEASE_NOT_ALLOWED',
+      '这个批次还不满足放行条件，不能登记放行：' + reasons.join('；'),
+      { code: batch.code, verdict: check.verdict, reasons }
+    );
+  }
   const release = {
     id: store.nextId('rl', data.releases),
     batchId: batch.id,

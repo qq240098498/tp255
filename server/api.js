@@ -29,12 +29,14 @@ function overview(data) {
   });
   const statusCount = {};
   for (const b of data.batches) statusCount[b.status] = (statusCount[b.status] || 0) + 1;
-  const open = data.batches.filter((b) => b.status === '在库' || b.status === '待放行');
-  const readyToRelease = decorated.filter((d) => (d.batch.status === '在库' || d.batch.status === '待放行') && d.check.pass).length;
-  const blockedCount = decorated.filter((d) => (d.batch.status === '在库' || d.batch.status === '待放行') && !d.check.pass).length;
+  const isOpen = (b) => b.status === '在库' || b.status === '待放行';
+  const open = data.batches.filter(isOpen);
+  const readyToRelease = decorated.filter((d) => isOpen(d.batch) && d.check.pass).length;
+  const insufficientCount = decorated.filter((d) => isOpen(d.batch) && d.check.verdict === 'insufficient').length;
+  const blockedCount = decorated.filter((d) => isOpen(d.batch) && !d.check.pass).length;
   const noRecordBatches = data.batches.filter((b) => !data.records.some((r) => r.batchId === b.id)).length;
   const expiredProbes = data.probes.filter((p) => !coldlib.probeValidOn(p, store.nowText().slice(0, 10))).length;
-  const mktValues = decorated.map((d) => d.check.mkt).filter((v) => v > 0);
+  const mktValues = decorated.map((d) => d.check.mkt).filter((v) => v != null);
   return {
     today: store.nowText().slice(0, 10),
     roomCount: data.rooms.length,
@@ -52,6 +54,7 @@ function overview(data) {
     rejectedCount: data.releases.filter((r) => r.decision === '拒收').length,
     readyToRelease,
     blockedCount,
+    insufficientCount,
     noRecordBatches,
     maxMkt: mktValues.length ? store.round(Math.max.apply(null, mktValues)) : 0,
     averageMkt: mktValues.length ? store.round(mktValues.reduce((a, b) => a + b, 0) / mktValues.length) : 0,

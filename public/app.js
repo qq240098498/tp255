@@ -28,7 +28,7 @@ const state = {
   expandedBatches: new Set(),
   filters: {
     rooms: { status: '', type: '', keyword: '', probeStatus: '', probeCal: 'all' },
-    batches: { status: '', roomId: '', product: '', noRecord: false },
+    batches: { status: '', roomId: '', product: '', noRecord: false, insufficient: false },
     records: { batchId: '', probeId: '', source: '', from: '', to: '' },
     releases: { decision: '' }
   }
@@ -47,6 +47,10 @@ function esc(v) {
 function num(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+function mktText(v) {
+  return v === null || v === undefined || v === '' ? '—' : String(v);
 }
 
 /* 接口报错统一是 {error:{code,message,details}}，这里把它抛成普通对象保留 details */
@@ -213,6 +217,7 @@ function renderOverview() {
     { title: '温度记录', value: s.recordCount, sub: '人工 ' + s.manualRecordCount, go: { view: 'records' } },
     { title: '放行 / 拒收', value: s.releasedCount + ' / ' + s.rejectedCount, sub: '台账 ' + s.releaseCount + ' 条', go: { view: 'releases' } },
     { title: '满足放行条件', value: s.readyToRelease, sub: '被挡下 ' + s.blockedCount, go: { view: 'batches' } },
+    { title: '数据不足不能放行', value: s.insufficientCount, sub: '缺记录或缺覆盖，需人工处理', go: { view: 'batches', insufficient: true } },
     { title: '没有温度记录', value: s.noRecordBatches, sub: '个批次', go: { view: 'batches', noRecord: true } },
     { title: 'MKT', value: s.maxMkt, sub: '平均 ' + s.averageMkt, go: { view: 'batches' } }
   ];
@@ -353,6 +358,7 @@ async function loadBatchesView() {
   if (f.product) params.set('product', f.product);
   let rows = await api('GET', '/api/batches' + (params.toString() ? '?' + params.toString() : ''));
   if (f.noRecord) rows = rows.filter(function (b) { return num(b.recordCount) === 0; });
+  if (f.insufficient) rows = rows.filter(function (b) { return b.releaseCheck && b.releaseCheck.verdict === 'insufficient'; });
   state.batchesView = rows;
   renderBatchRows();
 }
@@ -361,8 +367,9 @@ function releaseSituation(b) {
   if (num(b.releaseCount) > 0 && b.lastDecision) {
     return b.lastDecision === '放行' ? pill('已放行', 'pill-ok') : pill('已拒收', 'pill-bad');
   }
-  const pass = b.releaseCheck && b.releaseCheck.pass;
-  return pass ? pill('满足放行条件', 'pill-ok') : pill('未满足放行条件', 'pill-bad');
+  const check = b.releaseCheck || {};
+  if (check.verdict === 'insufficient') return pill('数据不足，不能放行', 'pill-warn');
+  return check.pass ? pill('满足放行条件', 'pill-ok') : pill('未满足放行条件', 'pill-bad');
 }
 
 function renderBatchRows() {
@@ -373,7 +380,8 @@ function renderBatchRows() {
     return;
   }
   tbody.innerHTML = rows.map(function (b) {
-    const main = '<tr class="row-main" data-rowkind="batch" data-id="' + esc(b.id) + '">' +
+    const insufficient = b.releaseCheck && b.releaseCheck.verdict === 'insufficient';
+    const main = '<tr class="row-main' + (insufficient ? ' row-warn' : '') + '" data-rowkind="batch" data-id="' + esc(b.id) + '">' +
       '<td>' + esc(b.code) + '</td>' +
       '<td>' + esc(b.product) + '</td>' +
       '<td>' + esc(b.spec) + '</td>' +
@@ -384,7 +392,7 @@ function renderBatchRows() {
       '<td class="num">' + num(b.recordCount) + '</td>' +
       '<td class="num">' + num(b.longestExcursionMinutes) + '</td>' +
       '<td class="num">' + num(b.totalExcursionMinutes) + '</td>' +
-      '<td class="num">' + num(b.mkt) + '</td>' +
+      '<td class="num">' + esc(mktText(b.mkt)) + '</td>' +
       '<td class="num">' + num(b.chainGapCount) + '</td>' +
       '<td>' + releaseSituation(b) + '</td>' +
       '</tr>';
@@ -424,13 +432,40 @@ function batchDetailRow(b) {
   }).join('') || '<tr><td colspan="4" class="empty">没有断链缺口</td></tr>';
 
   const check = d.releaseCheck || {};
-  const conds = (check.conditions || []).slice();
   const expired = check.expiredProbes || [];
-  conds.push({ key: 'calibration', ok: expired.length === 0, value: expired.length, limit: 0, text: '参与判定的探头都在校准有效期内' });
-  const condHtml = conds.map(function (c) {
-    return '<li><span class="cond-text">' + okPill(c.ok) + ' ' + esc(c.text) + '</span>' +
-      '<span class="cond-meta">实际 ' + esc(c.value) + '，阈值 ' + esc(c.limit) + '</span></li>';
-  }).join('');
+  const coverage = check.coverage || null;
+  const insufficient = check.verdict === 'insufficient';
+
+  const verdictCls = insufficient ? 'verdict-insufficient' : (check.pass ? 'verdict-pass' : 'verdict-fail');
+  const verdictBanner = '<div class="verdict-banner ' + verdictCls + '">' +
+    '<span class="verdict-label">放行判定</span><strong>' + esc(check.verdictText || (check.pass ? '满足放行条件' : '未满足放行条件')) + '</strong></div>';
+
+  let coverageHtml = '';
+  if (coverage) {
+    const covRows = (coverage.gaps || []).map(function (g) {
+      const kindText = { all: '全程无记录', head: '入库后缺口', tail: '最近缺口', gap: '内部断链' }[g.kind] || g.kind;
+      return '<tr' + (g.kind === 'all' ? ' class="row-danger"' : '') + '><td>' + esc(kindText) + '</td><td>' + esc(g.from) + '</td><td>' + esc(g.to) + '</td>' +
+        '<td class="num">' + num(g.minutes) + '</td><td>' + esc(g.text) + '</td></tr>';
+    }).join('') || '<tr><td colspan="5" class="empty">在库时段记录连续，没有缺口</td></tr>';
+    coverageHtml =
+      '<div class="detail-block"><h4>数据覆盖（在库时段 ' + esc(coverage.startAt) + ' 至 ' + esc(coverage.endAt) + '）</h4>' +
+      '<div class="detail-note">有效记录 ' + num(coverage.effectiveRecordCount) + ' 条（原始 ' + num(coverage.rawRecordCount) +
+      ' 条，停用探头与被手工更正的自动记录已剔除），按 ' + num(coverage.intervalMinutes) + ' 分钟记录间隔至少应有 ' + num(coverage.expectedCount) +
+      ' 条；' + (coverage.sufficient ? '覆盖完整。' : '覆盖不足，以下时段缺记录：') + '</div>' +
+      '<table class="mini-table"><thead><tr><th>类型</th><th>起</th><th>止</th><th class="num">缺口(分)</th><th>说明</th></tr></thead><tbody>' + covRows + '</tbody></table></div>';
+  }
+
+  // 判据由服务端给出（含探头校准）；数据不足时服务端不给逐条判据，明确提示不参与评价
+  let condHtml;
+  if (insufficient) {
+    condHtml = '<li><span class="cond-text">' + pill('不评价', 'pill-warn') +
+      ' 数据不足，四项判据暂不评价</span><span class="cond-meta">先补齐温度记录再判定</span></li>';
+  } else {
+    condHtml = (check.conditions || []).map(function (c) {
+      return '<li><span class="cond-text">' + okPill(c.ok) + ' ' + esc(c.text) + '</span>' +
+        '<span class="cond-meta">实际 ' + esc(c.value) + '，阈值 ' + esc(c.limit) + '</span></li>';
+    }).join('');
+  }
 
   const expiredProbes = expired.map(function (p) {
     return '<tr><td>' + esc(p.probeCode) + '</td><td>' + esc(p.calibratedUntil) + '</td><td>' + esc(p.at) + '</td></tr>';
@@ -438,23 +473,31 @@ function batchDetailRow(b) {
 
   const releases = (d.releases || []).map(function (r) {
     return '<tr><td>' + esc(r.decision) + '</td><td>' + esc(r.decidedAt) + '</td><td>' + esc(r.decider) + '</td>' +
-      '<td class="num">' + num(r.mkt) + '</td><td>' + esc(r.basis) + '</td></tr>';
+      '<td class="num">' + esc(mktText(r.mkt)) + '</td><td>' + esc(r.basis) + '</td></tr>';
   }).join('') || '<tr><td colspan="5" class="empty">没有放行记录</td></tr>';
 
+  const hasDecision = num(b.releaseCount) > 0 && b.lastDecision;
+  const releaseDisabled = !hasDecision && !check.pass;
+  const releaseTitle = releaseDisabled
+    ? (insufficient ? '数据不足，不能放行：先补齐温度记录' : '还不满足放行条件')
+    : '';
   const decisionBtns = '<div class="detail-actions">' +
-    '<button type="button" class="btn btn-primary" data-action="batch-release" data-id="' + esc(b.id) + '">放行</button>' +
+    '<button type="button" class="btn btn-primary" data-action="batch-release" data-id="' + esc(b.id) + '"' +
+    (releaseDisabled ? ' disabled title="' + esc(releaseTitle) + '"' : '') + '>放行</button>' +
     '<button type="button" class="btn" data-action="batch-reject" data-id="' + esc(b.id) + '">拒收</button>' +
     '<button type="button" class="btn btn-danger" data-action="batch-del" data-id="' + esc(b.id) + '">删除</button>' +
+    (releaseDisabled ? '<div class="detail-note">' + esc(releaseTitle) + '；服务端同样会挡下放行请求。</div>' : '') +
     '</div>';
 
   return '<tr class="row-detail"><td colspan="13">' +
     '<div class="detail-grid">' +
+    coverageHtml +
     '<div class="detail-block"><h4>温度记录（' + (d.records || []).length + '）</h4>' +
     '<table class="mini-table"><thead><tr><th>时刻</th><th>探头</th><th class="num">温度(℃)</th><th>来源</th><th>是否超限</th><th>探头是否过期</th></tr></thead><tbody>' + records + '</tbody></table></div>' +
     '<div class="detail-block"><h4>超限段（' + (d.segments || []).length + '）</h4>' + segmentsHtml +
     '<h4>断链缺口（' + (d.chainGaps || []).length + '）</h4>' +
     '<table class="mini-table"><thead><tr><th>起</th><th>止</th><th class="num">实际(分)</th><th class="num">计入(分)</th></tr></thead><tbody>' + gaps + '</tbody></table></div>' +
-    '<div class="detail-block"><h4>放行判定</h4><ul class="cond-list">' + condHtml + '</ul>' +
+    '<div class="detail-block"><h4>放行判定</h4>' + verdictBanner + '<ul class="cond-list">' + condHtml + '</ul>' +
     '<h4>已过校准期的探头（' + expired.length + '）</h4>' +
     '<table class="mini-table"><thead><tr><th>探头</th><th>校准有效期</th><th>记录时刻</th></tr></thead><tbody>' + expiredProbes + '</tbody></table></div>' +
     '<div class="detail-block"><h4>放行记录（' + (d.releases || []).length + '）</h4>' +
@@ -579,7 +622,7 @@ async function loadReleasesView() {
       '<td>' + (r.decision === '放行' ? pill('放行', 'pill-ok') : pill('拒收', 'pill-bad')) + '</td>' +
       '<td>' + esc(r.decidedAt) + '</td>' +
       '<td>' + esc(r.decider) + '</td>' +
-      '<td class="num">' + num(r.mkt) + '</td>' +
+      '<td class="num">' + esc(mktText(r.mkt)) + '</td>' +
       '<td class="num">' + num(r.longestExcursionMinutes) + '</td>' +
       '<td class="num">' + num(r.totalExcursionMinutes) + '</td>' +
       '<td class="num">' + num(r.chainGapCount) + '</td>' +
@@ -624,7 +667,8 @@ function renderFilters() {
       '<div class="filter-field"><label>状态</label>' + selectHtml('status', [{ value: '', label: '全部' }].concat(BATCH_STATUS.map(function (s) { return { value: s, label: s }; })), f.status) + '</div>' +
       '<div class="filter-field"><label>所在冷库</label>' + selectHtml('roomId', roomSel, f.roomId) + '</div>' +
       '<div class="filter-field"><label>品名</label>' + textHtml('product', f.product, '品名关键字') + '</div>' +
-      '<div class="filter-field"><label>只看无记录</label><input type="checkbox" data-filter="noRecord"' + (f.noRecord ? ' checked' : '') + '></div>';
+      '<div class="filter-field"><label>只看无记录</label><input type="checkbox" data-filter="noRecord"' + (f.noRecord ? ' checked' : '') + '></div>' +
+      '<div class="filter-field"><label>只看数据不足</label><input type="checkbox" data-filter="insufficient"' + (f.insufficient ? ' checked' : '') + '></div>';
   } else if (v === 'records') {
     const f = state.filters.records;
     const batchSel = [{ value: '', label: '全部' }].concat(state.batches.map(function (b) { return { value: b.id, label: b.code }; }));
@@ -836,6 +880,7 @@ async function handleAction(action, el) {
       const go = JSON.parse(el.dataset.go || '{}');
       if (go.view === 'rooms' && go.probeCal) state.filters.rooms.probeCal = go.probeCal;
       if (go.view === 'batches' && go.noRecord) state.filters.batches.noRecord = true;
+      if (go.view === 'batches' && go.insufficient) state.filters.batches.insufficient = true;
       await switchView(go.view);
       return;
     }
@@ -872,6 +917,7 @@ async function handleAction(action, el) {
       return;
     }
     if (action === 'batch-release' || action === 'batch-reject') {
+      if (el.disabled) return;
       const batch = findBatch(el.dataset.id);
       if (batch) openDecisionModal(batch, action === 'batch-release' ? '放行' : '拒收');
       return;

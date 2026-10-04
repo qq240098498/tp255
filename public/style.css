@@ -16,6 +16,8 @@
   --paper: #ffffff;
   --ok: #2f8f6b;
   --ok-soft: #e7f4ee;
+  --warn: #b7791f;
+  --warn-soft: #fdf3e3;
 }
 
 * { box-sizing: border-box; }
@@ -87,6 +89,11 @@ button { font-family: inherit; font-size: 13px; }
 .btn-danger { border-color: var(--accent); color: var(--accent); }
 .btn-danger:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .btn-danger.armed { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn:disabled, .btn[disabled] {
+  border-color: var(--line); color: var(--ink-soft); background: var(--line-soft);
+  cursor: not-allowed; opacity: .7;
+}
+.btn:disabled:hover, .btn[disabled]:hover { background: var(--line-soft); border-color: var(--line); color: var(--ink-soft); }
 
 .icon-btn {
   border: none; background: transparent; color: var(--ink-soft);
@@ -212,6 +219,8 @@ button { font-family: inherit; font-size: 13px; }
 
 .row-danger td { background: var(--accent-soft); }
 .row-danger:hover td { background: #fbdcd8; }
+.row-warn td { background: var(--warn-soft); }
+.row-warn:hover td { background: #f9eccf; }
 
 tr.row-detail > td { background: #f7fbfc; border-bottom: 1px solid var(--line); }
 .detail-note { color: var(--ink-soft); font-size: 12px; margin: 2px 0 8px; }
@@ -227,6 +236,7 @@ tr.row-detail > td { background: #f7fbfc; border-bottom: 1px solid var(--line); 
 .pill { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 12px; border: 1px solid var(--line); background: #fff; }
 .pill-ok { color: var(--ok); border-color: #a9d8c4; background: var(--ok-soft); }
 .pill-bad { color: var(--accent); border-color: #f3b7b0; background: var(--accent-soft); }
+.pill-warn { color: var(--warn); border-color: #e8cf9a; background: var(--warn-soft); }
 .pill-mute { color: var(--ink-soft); }
 
 .cond-list { list-style: none; margin: 0; padding: 0; }
@@ -234,6 +244,19 @@ tr.row-detail > td { background: #f7fbfc; border-bottom: 1px solid var(--line); 
 .cond-list li:last-child { border-bottom: none; }
 .cond-text { flex: 1 1 auto; }
 .cond-meta { color: var(--ink-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.verdict-banner {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; margin: 2px 0 8px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--paper);
+}
+.verdict-banner .verdict-label { color: var(--ink-soft); font-size: 12px; }
+.verdict-banner.verdict-pass { border-color: #a9d8c4; background: var(--ok-soft); }
+.verdict-banner.verdict-pass strong { color: var(--ok); }
+.verdict-banner.verdict-fail { border-color: #f3b7b0; background: var(--accent-soft); }
+.verdict-banner.verdict-fail strong { color: var(--accent); }
+.verdict-banner.verdict-insufficient { border-color: #e8cf9a; background: var(--warn-soft); }
+.verdict-banner.verdict-insufficient strong { color: var(--warn); }
 
 /* 指标卡 */
 .cards {
